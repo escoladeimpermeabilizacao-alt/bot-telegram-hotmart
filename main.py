@@ -83,35 +83,44 @@ async def receber_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     aluno = carregar_aluno(email_usuario)
     produtos_ativos = aluno.get('active_products', []) if aluno else []
     
+    # Verifica se tem produtos ativos
     if aluno and len(produtos_ativos) > 0:
         try:
             id_antigo = aluno.get('telegram_id')
             link_antigo = aluno.get('invite_link')
             
+            # --- CENÁRIO 1: O usuário já está registrado ---
             if id_antigo == novo_user_id:
+                # Opcional: Poderíamos verificar aqui se ele realmente está no chat,
+                # mas se o ID está no banco, assumimos que está ok.
                 await update.message.reply_text("✅ Você já possui acesso ativo com este usuário. Verifique se já está no grupo.")
                 return 
 
+            # --- CENÁRIO 2: Troca de Conta ou Roubo de Senha ---
+            # Se existe um ID antigo gravado e é diferente do atual -> Expulsa o antigo
             if id_antigo and id_antigo != novo_user_id:
                 try:
                     await context.bot.ban_chat_member(chat_id=GRUPO_ID, user_id=id_antigo)
                     await context.bot.unban_chat_member(chat_id=GRUPO_ID, user_id=id_antigo)
                     print(f"♻️ TROCA: {id_antigo} removido para entrada de {novo_user_id}.")
                 except Exception as e:
-                    print(f"Aviso Kick: {e}")
+                    print(f"Aviso Kick (Troca): {e}")
 
+            # Revoga link antigo se houver
             if link_antigo:
                 try:
                     await context.bot.revoke_chat_invite_link(chat_id=GRUPO_ID, invite_link=link_antigo)
                 except:
                     pass
 
+            # --- GERAÇÃO DO NOVO LINK ---
             convite = await context.bot.create_chat_invite_link(
                 chat_id=GRUPO_ID, 
                 member_limit=1, 
                 name=f"Aluno {email_usuario}" 
             )
             
+            # Atualiza e salva
             aluno['telegram_id'] = novo_user_id
             aluno['invite_link'] = convite.invite_link
             salvar_aluno(email_usuario, aluno)
@@ -119,7 +128,7 @@ async def receber_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ Acesso Confirmado!\n\n"
                 f"Aqui está seu link exclusivo e de **uso único**. Não compartilhe:\n{convite.invite_link}\n\n"
-                f"⚠️ **Atenção:** Se você gerar um novo link, este anterior deixará de funcionar imediatamente."
+                f"⚠️ **Atenção:** Se você gerar um novo link, este anterior deixará de funcionar imediatamente.\n"
                 f"⚠️ **Importante:** Este login desconectou qualquer outro dispositivo que estivesse usando este e-mail no grupo."
             )
             print(f"LOGIN: {email_usuario} vinculado ao ID {novo_user_id}")
@@ -136,22 +145,19 @@ ptb_app = Application.builder().token(TOKEN_TELEGRAM).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_email))
 
-# --- 5. LIFESPAN (AQUI ESTÁ A CORREÇÃO DO CONFLITO) ---
+# --- 5. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Iniciando Sistema...")
     init_db()
     
-    # Inicializa o App
     await ptb_app.initialize()
     
-    # --- LIMPEZA DE CONEXÕES ANTIGAS (O Código que faltava) ---
     try:
         print("🧹 Limpando webhook/conexões antigas...")
         await ptb_app.bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
         print(f"Aviso na limpeza: {e}")
-    # ---------------------------------------------------------
 
     await ptb_app.start()
     await ptb_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
@@ -180,6 +186,13 @@ async def hotmart_webhook(request: Request):
     email = buyer.get("email", "").lower()
     produto_id = str(product.get("id", "0"))
 
+    # --- TRAPAÇA PARA TESTES (CHEAT CODE) ---
+    # Permite testar produtos diferentes usando o botão de teste da Hotmart
+    # Se o email tiver "+p1" vira produto 1001. Se tiver "+p2" vira 2002.
+    if "+p1" in email: produto_id = "1001"
+    if "+p2" in email: produto_id = "2002"
+    # ----------------------------------------
+
     if not email:
         return {"status": "ignored"}
 
@@ -202,13 +215,22 @@ async def hotmart_webhook(request: Request):
             lista_produtos.remove(produto_id)
         
         aluno['active_products'] = list(lista_produtos)
-        salvar_aluno(email, aluno)
         
+        # Se a lista ficou vazia, expulsa
         if len(lista_produtos) == 0:
             telegram_id = aluno.get('telegram_id')
             link_pendente = aluno.get('invite_link')
             
-            print(f"🚫 SEM ACESSOS: {email} perdeu o último produto. Iniciando remoção.")
+            # --- LIMPEZA DE BANCO (A CORREÇÃO IMPORTANTE) ---
+            # Se foi expulso, resetamos o ID para permitir que ele entre de novo no futuro
+            aluno['telegram_id'] = None
+            aluno['invite_link'] = None
+            # -----------------------------------------------
+            
+            # Salva o estado "limpo" no banco
+            salvar_aluno(email, aluno)
+
+            print(f"🚫 SEM ACESSOS: {email} perdeu o último produto. Removendo.")
             
             bot = Bot(token=TOKEN_TELEGRAM)
             if telegram_id:
@@ -223,11 +245,12 @@ async def hotmart_webhook(request: Request):
                     await bot.revoke_chat_invite_link(chat_id=GRUPO_ID, invite_link=link_pendente)
                 except:
                     pass
+        else:
+            # Se ainda tem produtos, só salva a lista atualizada
+            salvar_aluno(email, aluno)
 
     return {"status": "received"}
 
 if __name__ == "__main__":
-    # CORREÇÃO DA PORTA: Usa a variável de ambiente PORT do Render ou 10000 como padrão
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
