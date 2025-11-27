@@ -1,4 +1,3 @@
-import os
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -7,9 +6,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import uvicorn
 
 # --- 1. CONFIGURAÇÕES ---
-TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM", "SEU_TOKEN_FIXO_AQUI") "8415807755:AAEKweJtrrA2-s8UKqeBUpLJojgRiMeS9Lk"
-GRUPO_ID = int(os.getenv("GRUPO_ID", "-1003394118030"))
-
+TOKEN_TELEGRAM = "8415807755:AAEKweJtrrA2-s8UKqeBUpLJojgRiMeS9Lk"
+GRUPO_ID = -1003394118030 
 
 # Simulação de Banco de Dados
 # Estrutura nova: { "email": {"status": "...", "telegram_id": 123, "invite_link": "https://..."} }
