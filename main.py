@@ -1,66 +1,127 @@
 import asyncio
+import json
+import os
 from contextlib import asynccontextmanager
+import psycopg2
+from psycopg2.extras import Json
 from fastapi import FastAPI, Request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import uvicorn
 
 # --- 1. CONFIGURAÇÕES ---
-TOKEN_TELEGRAM = "8415807755:AAEKweJtrrA2-s8UKqeBUpLJojgRiMeS9Lk"
-GRUPO_ID = -1003394118030 
+TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM", "SEU_TOKEN_AQUI")
+GRUPO_ID = int(os.getenv("GRUPO_ID", "-1003394118030")) 
+DATABASE_URL = os.getenv("DATABASE_URL") 
 
-# Simulação de Banco de Dados
-# Estrutura nova: { "email": {"status": "...", "telegram_id": 123, "invite_link": "https://..."} }
-db_alunos = {}
+# --- 2. FUNÇÕES DE BANCO DE DADOS ---
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
-# --- 2. LÓGICA DO TELEGRAM (HANDLERS) ---
+def init_db():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS alunos (
+                email TEXT PRIMARY KEY,
+                data JSONB
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Banco de Dados Conectado.")
+    except Exception as e:
+        print(f"❌ Erro DB Init: {e}")
+
+def carregar_aluno(email):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT data FROM alunos WHERE email = %s", (email,))
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result:
+            return result[0]
+        return None
+    except Exception as e:
+        print(f"Erro DB Load: {e}")
+        return None
+
+def salvar_aluno(email, dados_dict):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO alunos (email, data) 
+            VALUES (%s, %s)
+            ON CONFLICT (email) 
+            DO UPDATE SET data = EXCLUDED.data;
+        """, (email, Json(dados_dict)))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Erro DB Save: {e}")
+
+# --- 3. LÓGICA DO TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Olá! Sou o guardião do grupo de membros do Telegram da Escola de Impermeabilização.\n"
-        "Para liberar seu acesso, por favor, digite o **email** que você usou na compra da Hotmart.\n\n"
-        "Caso você tenha problemas comigo, envie uma mensagem com seu comprovante de compra em um de nossos canais de contato."
+        "Olá! Sou o guardião do grupo exclusivo de Telegram da Escola de Impermeabilização.\n"
+        "Se tiver quaisquer problemas comigo, entre em contato conosco por um de nossos canais, enviando o email da assinatura e o comprovante de inscrição.\n"
+        "Digite o **email** usado na compra para liberar ou validar seu acesso."
     )
 
 async def receber_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email_usuario = update.message.text.lower().strip()
     novo_user_id = update.effective_user.id
     
-    aluno = db_alunos.get(email_usuario)
+    aluno = carregar_aluno(email_usuario)
 
-    if aluno and aluno['status'] == 'approved':
+    # Verifica se tem PELO MENOS UM produto ativo
+    produtos_ativos = aluno.get('active_products', []) if aluno else []
+    
+    if aluno and len(produtos_ativos) > 0:
         try:
-            # --- SEGURANÇA TOTAL (ANTI-COMPARTILHAMENTO) ---
-            # 1. Recupera dados antigos
+            # --- PROTEÇÃO DE VÍNCULO MÚLTIPLO ---
             id_antigo = aluno.get('telegram_id')
             link_antigo = aluno.get('invite_link')
             
-            # 2. Se já tinha alguém vinculado a este email (e não é a mesma pessoa de agora)
+            # 1. Se o usuário já está vinculado e é o MESMO usuário chamando
+            if id_antigo == novo_user_id:
+                await update.message.reply_text("✅ Você já possui acesso ativo com este usuário. Verifique se já está no grupo.")
+                return # Encerra aqui, não gera link novo para não gastar cota nem criar bagunça
+
+            # 2. Se o usuário mudou (Troca de conta/Empréstimo de senha)
             if id_antigo and id_antigo != novo_user_id:
                 try:
-                    # Expulsa o usuário anterior do grupo (um derruba o outro)
+                    # Remove o anterior
                     await context.bot.ban_chat_member(chat_id=GRUPO_ID, user_id=id_antigo)
                     await context.bot.unban_chat_member(chat_id=GRUPO_ID, user_id=id_antigo)
-                    print(f"♻️ TROCA DE DISPOSITIVO: Usuário antigo {id_antigo} removido para entrada de {novo_user_id}.")
+                    print(f"♻️ TROCA: {id_antigo} removido para entrada de {novo_user_id}.")
                 except Exception as e:
-                    print(f"Aviso: Não foi possível remover usuário antigo (talvez já tenha saído): {e}")
+                    print(f"Aviso Kick: {e}")
 
-            # 3. Revoga link antigo (se houver)
+            # 3. Revoga link anterior (se houver)
             if link_antigo:
                 try:
                     await context.bot.revoke_chat_invite_link(chat_id=GRUPO_ID, invite_link=link_antigo)
                 except:
                     pass
 
-            # --- GERAÇÃO DO NOVO ACESSO ---
+            # 4. Gera NOVO acesso
             convite = await context.bot.create_chat_invite_link(
                 chat_id=GRUPO_ID, 
                 member_limit=1, 
                 name=f"Aluno {email_usuario}" 
             )
             
-            # Atualiza o banco com o NOVO dono
-            db_alunos[email_usuario]['telegram_id'] = novo_user_id
-            db_alunos[email_usuario]['invite_link'] = convite.invite_link
+            # Salva vínculo novo
+            aluno['telegram_id'] = novo_user_id
+            aluno['invite_link'] = convite.invite_link
+            salvar_aluno(email_usuario, aluno)
             
             await update.message.reply_text(
                 f"✅ Acesso Confirmado!\n\n"
@@ -68,89 +129,103 @@ async def receber_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ **Atenção:** Se você gerar um novo link, este anterior deixará de funcionar imediatamente."
                 f"⚠️ **Importante:** Este login desconectou qualquer outro dispositivo que estivesse usando este e-mail no grupo."
             )
-            print(f"LOGIN NOVO: {email_usuario} agora é ID {novo_user_id}")
+            print(f"LOGIN: {email_usuario} vinculado ao ID {novo_user_id}")
             
         except Exception as e:
             await update.message.reply_text("Erro técnico ao gerar acesso.")
             print(f"ERRO: {e}")
 
-    elif aluno and aluno['status'] != 'approved':
-        await update.message.reply_text("Sua assinatura não está ativa.")
     else:
-        await update.message.reply_text("❌ Email não encontrado.")
+        # Caso não tenha nenhum produto ativo na lista
+        await update.message.reply_text("❌ Nenhuma assinatura ativa encontrada para este e-mail. Verifique se o endereço está correto e, se sim, entre em contato conosco enviando seu comprovante de assinatura e endereço de email.")
 
-# --- 3. CRIAÇÃO DO BOT ---
+# --- 4. CONFIGURAÇÃO DO BOT ---
 ptb_app = Application.builder().token(TOKEN_TELEGRAM).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_email))
 
-# --- 4. GERENCIADOR DE CICLO DE VIDA ---
+# --- 5. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Iniciando Bot Telegram...")
+    print("🚀 Iniciando Sistema...")
+    init_db()
     await ptb_app.initialize()
     await ptb_app.start()
     await ptb_app.updater.start_polling()
-    print("🤖 Bot ONLINE e ESCUTANDO mensagens!")
-    
+    print("🤖 Bot ONLINE!")
     yield 
-    
-    print("🛑 Parando Bot...")
+    print("🛑 Parando Sistema...")
     await ptb_app.updater.stop()
     await ptb_app.stop()
     await ptb_app.shutdown()
-    print("Bot Desligado.")
 
-# --- 5. O SERVIDOR WEB ---
 app = FastAPI(lifespan=lifespan)
 
-# --- 6. O WEBHOOK DA HOTMART ---
+# --- 6. WEBHOOK HOTMART (LÓGICA MULTI-PRODUTO) ---
 @app.post("/webhook")
 async def hotmart_webhook(request: Request):
     dados = await request.json()
     
+    # Extração de dados
     evento = dados.get("event")
     data = dados.get("data", {})
     buyer = data.get("buyer", {})
+    product = data.get("product", {}) # Hotmart manda dados do produto aqui
+    
     email = buyer.get("email", "").lower()
+    produto_id = str(product.get("id", "0")) # ID numérico do curso (ex: 123456)
 
     if not email:
-        return {"status": "ignored", "reason": "no email"}
+        return {"status": "ignored"}
 
-    print(f"📥 Hotmart Evento: {evento} -> {email}")
+    print(f"📥 Hotmart: {evento} | Produto: {produto_id} | Email: {email}")
+
+    # Carrega estado atual ou cria vazio
+    aluno = carregar_aluno(email)
+    if not aluno:
+        aluno = {"telegram_id": None, "invite_link": None, "active_products": []}
+    
+    lista_produtos = set(aluno.get('active_products', [])) # Usa SET para evitar duplicatas
 
     if evento == "PURCHASE_APPROVED":
-        # Inicia o registro apenas com status, sem link e sem ID ainda
-        db_alunos[email] = {"status": "approved", "telegram_id": None, "invite_link": None}
-        print(f"✅ LIBERADO: Aguardando {email} chamar no Telegram.")
+        # ADICIONA o produto à lista
+        lista_produtos.add(produto_id)
+        aluno['active_products'] = list(lista_produtos)
+        salvar_aluno(email, aluno)
+        print(f"✅ COMPRA: {email} agora tem os produtos: {aluno['active_products']}")
     
     elif evento in ["SUBSCRIPTION_CANCELLATION", "REFUNDED", "PURCHASE_CANCELED"]:
-        if email in db_alunos:
-            # Marca como cancelado no banco
-            db_alunos[email]['status'] = 'cancelled'
+        # REMOVE o produto da lista
+        if produto_id in lista_produtos:
+            lista_produtos.remove(produto_id)
+        
+        aluno['active_products'] = list(lista_produtos)
+        salvar_aluno(email, aluno)
+        
+        # VERIFICA SE AINDA SOBROU ALGUMA COISA
+        if len(lista_produtos) == 0:
+            # Lista vazia -> EXPULSAR AGORA
+            telegram_id = aluno.get('telegram_id')
+            link_pendente = aluno.get('invite_link')
             
-            # Recupera dados para executar a segurança
-            telegram_id = db_alunos[email].get('telegram_id')
-            link_pendente = db_alunos[email].get('invite_link')
+            print(f"🚫 SEM ACESSOS: {email} perdeu o último produto. Iniciando remoção.")
             
             bot = Bot(token=TOKEN_TELEGRAM)
-
-            # 1. Tenta EXPULSAR (Se já entrou)
             if telegram_id:
                 try:
                     await bot.ban_chat_member(chat_id=GRUPO_ID, user_id=telegram_id)
                     await bot.unban_chat_member(chat_id=GRUPO_ID, user_id=telegram_id)
-                    print(f"🚫 REMOVIDO: Usuário {telegram_id} removido.")
+                    print(f"👋 REMOVIDO: {telegram_id} removido.")
                 except Exception as e:
-                    print(f"Aviso: Não foi possível remover (talvez não esteja no grupo ainda). Erro: {e}")
-
-            # 2. Tenta REVOGAR O LINK (Se ainda não entrou)
+                    print(f"Erro Ban: {e}")
+            
             if link_pendente:
                 try:
                     await bot.revoke_chat_invite_link(chat_id=GRUPO_ID, invite_link=link_pendente)
-                    print(f"🔒 LINK REVOGADO: O convite {link_pendente} foi cancelado.")
-                except Exception as e:
-                    print(f"Aviso: Erro ao revogar link: {e}")
+                except:
+                    pass
+        else:
+            print(f"⚠️ MANTIDO: {email} cancelou produto {produto_id}, mas ainda tem {len(lista_produtos)} ativos.")
 
     return {"status": "received"}
 
