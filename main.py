@@ -69,8 +69,10 @@ def salvar_aluno(email, dados_dict):
 # --- 3. LÓGICA DO TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Olá! Sou o guardião do grupo exclusivo de Telegram da Escola de Impermeabilização.\n"
+        "👋 Olá! Sou o guardião do grupo exclusivo de Telegram da Escola de Impermeabilização.\n"
+        "\n"
         "Se tiver quaisquer problemas comigo, entre em contato conosco por um de nossos canais, enviando o email da assinatura e o comprovante de inscrição.\n"
+        "\n"
         "Digite o **email** usado na compra para liberar ou validar seu acesso."
     )
 
@@ -228,3 +230,4 @@ if __name__ == "__main__":
     # CORREÇÃO DA PORTA: Usa a variável de ambiente PORT do Render ou 10000 como padrão
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
