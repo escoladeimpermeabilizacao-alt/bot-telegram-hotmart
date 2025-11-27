@@ -194,7 +194,7 @@ async def hotmart_webhook(request: Request):
             else:
                 produto_id = "2002"
                 
-        elif evento in ["SUBSCRIPTION_CANCELLATION", "REFUNDED", "PURCHASE_CANCELED"]:
+        elif evento in ["SUBSCRIPTION_CANCELLATION", "PURCHASE_REFUNDED", "PURCHASE_CANCELED", "COMPLETED"]:
             # === EXTERMINADOR DE ZUMBI ===
             # Se tiver um '0' preso lá, a gente apaga ele na força bruta agora
             if '0' in lista_produtos:
@@ -218,7 +218,7 @@ async def hotmart_webhook(request: Request):
         salvar_aluno(email, aluno)
         print(f"✅ ATIVO. Produtos atuais: {aluno['active_products']}")
     
-    elif evento in ["SUBSCRIPTION_CANCELLATION", "REFUNDED", "PURCHASE_CANCELED"]:
+    elif evento in elif evento in ["SUBSCRIPTION_CANCELLATION", "PURCHASE_REFUNDED", "PURCHASE_CANCELED", "COMPLETED"]:
         if produto_id in lista_produtos:
             lista_produtos.remove(produto_id)
         
@@ -258,4 +258,5 @@ async def hotmart_webhook(request: Request):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
