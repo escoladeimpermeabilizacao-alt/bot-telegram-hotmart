@@ -218,7 +218,7 @@ async def hotmart_webhook(request: Request):
         salvar_aluno(email, aluno)
         print(f"✅ ATIVO. Produtos atuais: {aluno['active_products']}")
     
-    elif evento in elif evento in ["SUBSCRIPTION_CANCELLATION", "PURCHASE_REFUNDED", "PURCHASE_CANCELED", "COMPLETED"]:
+    elif evento in ["SUBSCRIPTION_CANCELLATION", "PURCHASE_REFUNDED", "PURCHASE_CANCELED", "COMPLETED"]:
         if produto_id in lista_produtos:
             lista_produtos.remove(produto_id)
         
@@ -258,5 +258,6 @@ async def hotmart_webhook(request: Request):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
