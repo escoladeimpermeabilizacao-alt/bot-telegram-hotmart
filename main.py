@@ -161,6 +161,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+@app.get("/")
+async def health_check():
+    return {"status": "ok", "message": "Bot is awake!"}
+
 # --- 6. WEBHOOK HOTMART (LÓGICA SEQUENCIAL DE TESTE) ---
 @app.post("/webhook")
 async def hotmart_webhook(request: Request):
@@ -258,6 +262,7 @@ async def hotmart_webhook(request: Request):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
